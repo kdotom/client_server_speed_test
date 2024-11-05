@@ -36,33 +36,41 @@ class SpeedTestServer:
     def handle_client(self, client):
         try:
             while True:
-                # Receive test type (upload or download)
                 test_type = client.recv(1024).decode()
                 
                 if test_type == 'download':
-                    # Send data for download test
+                    # Send size first
+                    total_size = 8388608  # 8MB
+                    client.send(str(total_size).encode())
+                    client.recv(1024)  # Wait for ready signal
+                    
+                    # Send data in chunks
                     chunk_size = 8192
                     data = b'x' * chunk_size
-                    start_time = time.time()
+                    bytes_sent = 0
                     
-                    for _ in range(1000):  # Send approximately 8MB
-                        client.send(data)
-                    
-                    # Wait for client acknowledgment
+                    while bytes_sent < total_size:
+                        sent = client.send(data)
+                        bytes_sent += sent
+                        
+                    # Wait for completion acknowledgment
                     client.recv(1024)
                 
                 elif test_type == 'upload':
-                    # Receive data for upload test
-                    total_received = 0
-                    start_time = time.time()
+                    # Receive total size first
+                    total_size = int(client.recv(1024).decode())
+                    client.send(b'ready')
                     
-                    while total_received < 8388608:  # 8MB
-                        data = client.recv(8192)
-                        if not data:
+                    # Receive data
+                    bytes_received = 0
+                    while bytes_received < total_size:
+                        chunk = client.recv(8192)
+                        if not chunk:
                             break
-                        total_received += len(data)
+                        bytes_received += len(chunk)
                     
-                    client.send(b'ACK')
+                    # Send completion acknowledgment
+                    client.send(b'done')
                 
                 elif test_type == 'quit':
                     break
@@ -81,7 +89,7 @@ class SpeedTestClient:
         self.host = host
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.total_size = 8388608  # 8MB in bytes
+        self.total_size = 8388608  # 8MB
 
     def connect(self):
         self.sock.connect((self.host, self.port))
@@ -90,42 +98,61 @@ class SpeedTestClient:
         # Signal download test
         self.sock.send(b'download')
         
+        # Get total size
+        total_size = int(self.sock.recv(1024).decode())
+        self.sock.send(b'ready')
+        
         total_received = 0
         start_time = time.time()
         
-        with tqdm(total=self.total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
-            while total_received < self.total_size:
-                data = self.sock.recv(8192)
-                if not data:
+        with tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
+            while total_received < total_size:
+                try:
+                    chunk = self.sock.recv(min(8192, total_size - total_received))
+                    if not chunk:
+                        break
+                    chunk_size = len(chunk)
+                    total_received += chunk_size
+                    pbar.update(chunk_size)
+                except socket.error as e:
+                    print(f"Socket error: {e}")
                     break
-                total_received += len(data)
-                pbar.update(len(data))
+        
+        # Send completion acknowledgment
+        self.sock.send(b'done')
         
         duration = time.time() - start_time
-        speed_mbps = (total_received * 8) / (1000000 * duration)  # Convert to Mbps
-        
-        # Send acknowledgment
-        self.sock.send(b'ACK')
+        speed_mbps = (total_received * 8) / (1000000 * duration)
         return speed_mbps
 
     def test_upload(self):
         # Signal upload test
         self.sock.send(b'upload')
         
+        # Send total size
+        self.sock.send(str(self.total_size).encode())
+        self.sock.recv(1024)  # Wait for ready signal
+        
         chunk_size = 8192
         data = b'x' * chunk_size
         start_time = time.time()
+        bytes_sent = 0
         
         with tqdm(total=self.total_size, unit='B', unit_scale=True, desc="Uploading") as pbar:
-            for _ in range(1000):  # Send approximately 8MB
-                self.sock.send(data)
-                pbar.update(chunk_size)
+            while bytes_sent < self.total_size:
+                try:
+                    sent = self.sock.send(data[:min(chunk_size, self.total_size - bytes_sent)])
+                    bytes_sent += sent
+                    pbar.update(sent)
+                except socket.error as e:
+                    print(f"Socket error: {e}")
+                    break
         
-        # Wait for server acknowledgment
+        # Wait for completion acknowledgment
         self.sock.recv(1024)
         
         duration = time.time() - start_time
-        speed_mbps = (self.total_size * 8) / (1000000 * duration)  # Convert to Mbps
+        speed_mbps = (bytes_sent * 8) / (1000000 * duration)
         return speed_mbps
 
     def close(self):
