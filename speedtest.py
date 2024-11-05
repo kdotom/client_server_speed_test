@@ -22,6 +22,7 @@ class SpeedTestServer:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.host, self.port))
         self.running = False
+        self.clients = []  # Keep track of connected clients
 
     def start(self):
         self.running = True
@@ -29,10 +30,14 @@ class SpeedTestServer:
         print(f"Server listening on {self.host}:{self.port}")
         
         while self.running:
-            client, addr = self.sock.accept()
-            print(f"Connection from {addr}")
-            client_thread = threading.Thread(target=self.handle_client, args=(client,))
-            client_thread.start()
+            try:
+                client, addr = self.sock.accept()
+                self.clients.append(client)
+                print(f"Connection from {addr}")
+                client_thread = threading.Thread(target=self.handle_client, args=(client,))
+                client_thread.start()
+            except socket.error:
+                break  # Break the loop if socket is closed
 
     def handle_client(self, client):
         try:
@@ -46,7 +51,7 @@ class SpeedTestServer:
                     bytes_sent = 0
                     data = b'x' * CHUNK_SIZE
                     
-                    while bytes_sent < TOTAL_SIZE:
+                    while bytes_sent < TOTAL_SIZE and self.running:
                         sent = client.send(data)
                         bytes_sent += sent
                         
@@ -56,7 +61,7 @@ class SpeedTestServer:
                     bytes_received = 0
                     client.send(b'ready')  # Signal ready to receive
                     
-                    while bytes_received < TOTAL_SIZE:
+                    while bytes_received < TOTAL_SIZE and self.running:
                         chunk = client.recv(min(CHUNK_SIZE, TOTAL_SIZE - bytes_received))
                         if not chunk:
                             break
@@ -71,13 +76,31 @@ class SpeedTestServer:
                     break
                     
         except Exception as e:
-            print(f"Error handling client: {e}")
+            if self.running:  # Only print error if server is still running
+                print(f"Error handling client: {e}")
         finally:
+            if client in self.clients:
+                self.clients.remove(client)
             client.close()
 
     def stop(self):
+        print("\nShutting down server...")
         self.running = False
+        # Close all client connections
+        for client in self.clients[:]:  # Make a copy of the list to avoid modification during iteration
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+                client.close()
+                self.clients.remove(client)
+            except:
+                pass
+        # Close the server socket
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
         self.sock.close()
+        print("Server shutdown complete")
 
 class SpeedTestClient:
     def __init__(self, host='localhost', port=5000):
@@ -143,9 +166,12 @@ class SpeedTestClient:
     def close(self):
         try:
             self.sock.send(b'quit')
+            time.sleep(0.1)  # Give server time to process quit message
+            self.sock.shutdown(socket.SHUT_RDWR)
         except:
             pass
-        self.sock.close()
+        finally:
+            self.sock.close()
 
 def run_speed_test(server_host='localhost'):
     print(f"Starting speed test to {server_host}...")
@@ -176,13 +202,21 @@ def run_speed_test(server_host='localhost'):
 
 if __name__ == '__main__':
     import sys
+    import signal
     
     if len(sys.argv) > 1 and sys.argv[1] == 'server':
         server = SpeedTestServer()
+        
+        # Handle Ctrl+C gracefully
+        def signal_handler(signum, frame):
+            server.stop()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        
         try:
             server.start()
         except KeyboardInterrupt:
-            print("\nShutting down server...")
             server.stop()
     else:
         server_host = sys.argv[1] if len(sys.argv) > 1 else 'localhost'
