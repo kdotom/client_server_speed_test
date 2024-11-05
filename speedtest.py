@@ -12,7 +12,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 CHUNK_SIZE = 8192
-TOTAL_SIZE = 8*(1024)**3  # 8GB
+TOTAL_SIZE = 8*(1024)**2  # 8MB
 
 class SpeedTestServer:
     def __init__(self, host='0.0.0.0', port=5000):
