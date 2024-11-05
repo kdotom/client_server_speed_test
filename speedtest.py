@@ -1,4 +1,11 @@
-# server.py
+# speedtest.py
+
+# for server:
+# python speedtest.py server
+# for client:
+# python speedtest.py [server_ip]
+
+
 import socket
 import time
 import threading
