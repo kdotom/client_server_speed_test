@@ -1,9 +1,11 @@
 # speedtest.py
 
 # for server:
-# python speedtest.py server
+#     python speedtest.py server
+# to see the IP, use:
+#     hostname -I 
 # for client:
-# python speedtest.py [server_ip]
+#     python speedtest.py [server_ip]
 
 
 import socket
