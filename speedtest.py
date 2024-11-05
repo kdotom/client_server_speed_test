@@ -1,5 +1,4 @@
 # speedtest.py
-
 # for server:
 #     python speedtest.py server
 # to see the IP, use:
@@ -12,6 +11,7 @@ import socket
 import time
 import threading
 from datetime import datetime
+from tqdm import tqdm
 
 class SpeedTestServer:
     def __init__(self, host='0.0.0.0', port=5000):
@@ -76,12 +76,12 @@ class SpeedTestServer:
         self.running = False
         self.sock.close()
 
-# client.py
 class SpeedTestClient:
     def __init__(self, host='localhost', port=5000):
         self.host = host
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.total_size = 8388608  # 8MB in bytes
 
     def connect(self):
         self.sock.connect((self.host, self.port))
@@ -93,11 +93,13 @@ class SpeedTestClient:
         total_received = 0
         start_time = time.time()
         
-        while total_received < 8388608:  # 8MB
-            data = self.sock.recv(8192)
-            if not data:
-                break
-            total_received += len(data)
+        with tqdm(total=self.total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
+            while total_received < self.total_size:
+                data = self.sock.recv(8192)
+                if not data:
+                    break
+                total_received += len(data)
+                pbar.update(len(data))
         
         duration = time.time() - start_time
         speed_mbps = (total_received * 8) / (1000000 * duration)  # Convert to Mbps
@@ -114,14 +116,16 @@ class SpeedTestClient:
         data = b'x' * chunk_size
         start_time = time.time()
         
-        for _ in range(1000):  # Send approximately 8MB
-            self.sock.send(data)
+        with tqdm(total=self.total_size, unit='B', unit_scale=True, desc="Uploading") as pbar:
+            for _ in range(1000):  # Send approximately 8MB
+                self.sock.send(data)
+                pbar.update(chunk_size)
         
         # Wait for server acknowledgment
         self.sock.recv(1024)
         
         duration = time.time() - start_time
-        speed_mbps = (8388608 * 8) / (1000000 * duration)  # Convert to Mbps
+        speed_mbps = (self.total_size * 8) / (1000000 * duration)  # Convert to Mbps
         return speed_mbps
 
     def close(self):
@@ -129,11 +133,12 @@ class SpeedTestClient:
         self.sock.close()
 
 def run_speed_test(server_host='localhost'):
-    print("Starting speed test...")
+    print(f"Starting speed test to {server_host}...")
     client = SpeedTestClient(host=server_host)
     
     try:
         client.connect()
+        print(f"Connected to server at {server_host}")
         
         # Test download speed
         print("\nTesting download speed...")
@@ -144,6 +149,13 @@ def run_speed_test(server_host='localhost'):
         print("\nTesting upload speed...")
         upload_speed = client.test_upload()
         print(f"Upload speed: {upload_speed:.2f} Mbps")
+        
+        # Print summary
+        print("\nTest Summary:")
+        print(f"{'=' * 30}")
+        print(f"Download: {download_speed:.2f} Mbps")
+        print(f"Upload:   {upload_speed:.2f} Mbps")
+        print(f"{'=' * 30}")
         
     except Exception as e:
         print(f"Error during speed test: {e}")
@@ -159,6 +171,7 @@ if __name__ == '__main__':
         try:
             server.start()
         except KeyboardInterrupt:
+            print("\nShutting down server...")
             server.stop()
     else:
         # Run as client
