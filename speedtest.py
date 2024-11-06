@@ -12,7 +12,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 CHUNK_SIZE = 8192
-TOTAL_SIZE = 8*(1024)**3  # 8GB
+TOTAL_SIZE = 8*(1024)**3  # 8MB
 
 class SpeedTestServer:
     def __init__(self, host='0.0.0.0', port=5000):
@@ -182,21 +182,18 @@ def run_speed_test(server_host='localhost'):
         print(f"Connected to server at {server_host}")
         
         print("\nTesting download speed...")
-        print(f"Total data to download: {TOTAL_SIZE/1024/1024:.1f} MB")
         download_speed = client.test_download()
         print(f"Download speed: {download_speed:.2f} Mbps")
         
         print("\nTesting upload speed...")
-        print(f"Total data to upload: {TOTAL_SIZE/1024/1024:.1f} MB")
         upload_speed = client.test_upload()
         print(f"Upload speed: {upload_speed:.2f} Mbps")
         
         print("\nTest Summary:")
-        print(f"{'=' * 40}")
-        print(f"Total data transferred: {(TOTAL_SIZE*2)/1024/1024:.1f} MB")
+        print(f"{'=' * 30}")
         print(f"Download: {download_speed:.2f} Mbps")
         print(f"Upload:   {upload_speed:.2f} Mbps")
-        print(f"{'=' * 40}")
+        print(f"{'=' * 30}")
         
     except Exception as e:
         print(f"Error during speed test: {e}")
