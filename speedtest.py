@@ -1,110 +1,226 @@
-import subprocess
-import re
-import statistics
-import argparse
-from typing import List, Tuple, Dict
+# speedtest.py
+# for server:
+#     python speedtest.py server
+# to see the IP, use:
+#     hostname -I 
+# for client:
+#     python speedtest.py [server_ip]
+import socket
+import time
+import threading
 from datetime import datetime
+from tqdm import tqdm
 
-class WindowsTracert:
-    def __init__(self, target_ip: str, max_hops: int = 30, timeout: int = 4000):
-        self.target_ip = target_ip
-        self.max_hops = max_hops
-        self.timeout = timeout
-        self.results: Dict[int, List[Tuple[str, List[int]]]] = {}
+CHUNK_SIZE = 8192
+TOTAL_SIZE = 8388608  # 8MB
 
-    def run_tracert(self) -> None:
-        """Execute tracert command and parse results"""
-        cmd = f'tracert -h {self.max_hops} -w {self.timeout} {self.target_ip}'
+class SpeedTestServer:
+    def __init__(self, host='0.0.0.0', port=5000):
+        self.host = host
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((self.host, self.port))
+        self.running = False
+        self.clients = []  # Keep track of connected clients
+
+    def start(self):
+        self.running = True
+        self.sock.listen(1)
+        print(f"Server listening on {self.host}:{self.port}")
         
+        while self.running:
+            try:
+                client, addr = self.sock.accept()
+                self.clients.append(client)
+                print(f"Connection from {addr}")
+                client_thread = threading.Thread(target=self.handle_client, args=(client,))
+                client_thread.start()
+            except socket.error:
+                break  # Break the loop if socket is closed
+
+    def handle_client(self, client):
         try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            current_hop = 0
-            
             while True:
-                line = process.stdout.readline()
-                if not line:
+                test_type = client.recv(1024).decode()
+                
+                if test_type == 'download':
+                    client.send(str(TOTAL_SIZE).encode())
+                    client.recv(1024)  # Wait for ready
+                    
+                    bytes_sent = 0
+                    data = b'x' * CHUNK_SIZE
+                    
+                    while bytes_sent < TOTAL_SIZE and self.running:
+                        sent = client.send(data)
+                        bytes_sent += sent
+                        
+                    client.recv(1024)  # Wait for completion ack
+                
+                elif test_type == 'upload':
+                    bytes_received = 0
+                    client.send(b'ready')  # Signal ready to receive
+                    
+                    while bytes_received < TOTAL_SIZE and self.running:
+                        chunk = client.recv(min(CHUNK_SIZE, TOTAL_SIZE - bytes_received))
+                        if not chunk:
+                            break
+                        bytes_received += len(chunk)
+                        # Send progress ack every MB
+                        if bytes_received % 1048576 == 0:
+                            client.send(b'ack')
+                    
+                    client.send(b'done')
+                
+                elif test_type == 'quit':
                     break
                     
-                self._parse_tracert_line(line)
+        except Exception as e:
+            if self.running:  # Only print error if server is still running
+                print(f"Error handling client: {e}")
+        finally:
+            if client in self.clients:
+                self.clients.remove(client)
+            client.close()
 
-    def _parse_tracert_line(self, line: str) -> None:
-        """Parse individual tracert output line"""
-        # Match hop number and IP address
-        hop_match = re.match(r'\s*(\d+)', line)
-        if not hop_match:
-            return
+    def stop(self):
+        print("\nShutting down server...")
+        self.running = False
+        # Close all client connections
+        for client in self.clients[:]:  # Make a copy of the list to avoid modification during iteration
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+                client.close()
+                self.clients.remove(client)
+            except:
+                pass
+        # Close the server socket
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
+        self.sock.close()
+        print("Server shutdown complete")
 
-        hop_num = int(hop_match.group(1))
-        
-        # Extract latency values and IP
-        latencies = []
-        ip_address = "*"  # Default for timeout/failure
-        
-        # Look for IP address and latency values
-        ip_match = re.search(r'\[?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]?', line)
-        if ip_match:
-            ip_address = ip_match.group(1)
-            
-        # Find all latency values (in ms)
-        latency_matches = re.findall(r'(\d+)ms', line)
-        latencies = [int(ms) for ms in latency_matches]
-        
-        self.results[hop_num] = (ip_address, latencies)
+class SpeedTestClient:
+    def __init__(self, host='localhost', port=5000):
+        self.host = host
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    def generate_report(self) -> str:
-        """Generate a formatted report of the traceroute results"""
-        report = []
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def connect(self):
+        self.sock.connect((self.host, self.port))
+
+    def test_download(self):
+        self.sock.send(b'download')
+        total_size = int(self.sock.recv(1024).decode())
+        self.sock.send(b'ready')
         
-        report.append(f"Traceroute Report to {self.target_ip}")
-        report.append(f"Generated at: {timestamp}")
-        report.append("-" * 80)
-        report.append(f"{'Hop':4} {'IP Address':16} {'Min':6} {'Avg':6} {'Max':6} {'Loss%':6} {'Samples'}")
-        report.append("-" * 80)
+        total_received = 0
+        start_time = time.time()
         
-        for hop_num in sorted(self.results.keys()):
-            ip_address, latencies = self.results[hop_num]
-            
-            if not latencies:  # If no successful responses
-                report.append(f"{hop_num:3d}  {'*':15} {'---':6} {'---':6} {'---':6} {'100%':6} 0")
-                continue
+        with tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
+            while total_received < total_size:
+                chunk = self.sock.recv(min(CHUNK_SIZE, total_size - total_received))
+                if not chunk:
+                    break
+                chunk_size = len(chunk)
+                total_received += chunk_size
+                pbar.update(chunk_size)
+        
+        self.sock.send(b'done')
+        
+        duration = time.time() - start_time
+        return (total_received * 8) / (1000000 * duration)
+
+    def test_upload(self):
+        self.sock.send(b'upload')
+        response = self.sock.recv(1024)  # Wait for ready
+        if response != b'ready':
+            raise Exception("Server not ready")
+        
+        data = b'x' * CHUNK_SIZE
+        bytes_sent = 0
+        start_time = time.time()
+        
+        with tqdm(total=TOTAL_SIZE, unit='B', unit_scale=True, desc="Uploading") as pbar:
+            while bytes_sent < TOTAL_SIZE:
+                remaining = TOTAL_SIZE - bytes_sent
+                to_send = min(CHUNK_SIZE, remaining)
+                sent = self.sock.send(data[:to_send])
+                bytes_sent += sent
+                pbar.update(sent)
                 
-            loss_percent = (3 - len(latencies)) / 3 * 100  # Calculate packet loss
-            
-            min_latency = min(latencies)
-            avg_latency = round(statistics.mean(latencies))
-            max_latency = max(latencies)
-            
-            report.append(
-                f"{hop_num:3d}  {ip_address:15} {min_latency:6d} {avg_latency:6d} "
-                f"{max_latency:6d} {loss_percent:5.0f}% {len(latencies)}"
-            )
-            
-        return "\n".join(report)
+                # Wait for progress ack every MB
+                if bytes_sent % 1048576 == 0:
+                    self.sock.recv(1024)
+        
+        # Wait for final ack
+        response = self.sock.recv(1024)
+        if response != b'done':
+            raise Exception("Upload not acknowledged")
+        
+        duration = time.time() - start_time
+        return (bytes_sent * 8) / (1000000 * duration)
 
-def main():
-    parser = argparse.ArgumentParser(description='Windows Traceroute with Latency Analysis')
-    parser.add_argument('ip', help='Target IP address')
-    parser.add_argument('--max-hops', type=int, default=30, help='Maximum number of hops')
-    parser.add_argument('--timeout', type=int, default=4000, help='Timeout in milliseconds')
-    
-    args = parser.parse_args()
-    
-    tracer = WindowsTracert(
-        target_ip=args.ip,
-        max_hops=args.max_hops,
-        timeout=args.timeout
-    )
-    
-    print(f"\nTracing route to {args.ip}...")
-    tracer.run_tracert()
-    print("\n" + tracer.generate_report())
+    def close(self):
+        try:
+            self.sock.send(b'quit')
+            time.sleep(0.1)  # Give server time to process quit message
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
+        finally:
+            self.sock.close()
 
-if __name__ == "__main__":
-    main()
+def run_speed_test(server_host='localhost'):
+    print(f"Starting speed test to {server_host}...")
+    client = SpeedTestClient(host=server_host)
+    
+    try:
+        client.connect()
+        print(f"Connected to server at {server_host}")
+        
+        print("\nTesting download speed...")
+        print(f"Total data to download: {TOTAL_SIZE/1024/1024:.1f} MB")
+        download_speed = client.test_download()
+        print(f"Download speed: {download_speed:.2f} Mbps")
+        
+        print("\nTesting upload speed...")
+        print(f"Total data to upload: {TOTAL_SIZE/1024/1024:.1f} MB")
+        upload_speed = client.test_upload()
+        print(f"Upload speed: {upload_speed:.2f} Mbps")
+        
+        print("\nTest Summary:")
+        print(f"{'=' * 40}")
+        print(f"Total data transferred: {(TOTAL_SIZE*2)/1024/1024:.1f} MB")
+        print(f"Download: {download_speed:.2f} Mbps")
+        print(f"Upload:   {upload_speed:.2f} Mbps")
+        print(f"{'=' * 40}")
+        
+    except Exception as e:
+        print(f"Error during speed test: {e}")
+    finally:
+        client.close()
+
+if __name__ == '__main__':
+    import sys
+    import signal
+    
+    if len(sys.argv) > 1 and sys.argv[1] == 'server':
+        server = SpeedTestServer()
+        
+        # Handle Ctrl+C gracefully
+        def signal_handler(signum, frame):
+            server.stop()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        
+        try:
+            server.start()
+        except KeyboardInterrupt:
+            server.stop()
+    else:
+        server_host = sys.argv[1] if len(sys.argv) > 1 else 'localhost'
+        run_speed_test(server_host)
