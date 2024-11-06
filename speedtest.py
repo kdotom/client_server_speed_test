@@ -13,7 +13,7 @@ from tqdm import tqdm
 import statistics
 
 CHUNK_SIZE = 8192
-TOTAL_SIZE = 8388608  # 8MB
+TOTAL_SIZE = 8*(1024)**3  # 8MB
 PING_COUNT = 10  # Number of pings to average
 
 class SpeedTestServer:
