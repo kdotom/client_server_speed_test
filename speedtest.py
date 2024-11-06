@@ -10,9 +10,11 @@ import time
 import threading
 from datetime import datetime
 from tqdm import tqdm
+import statistics
 
 CHUNK_SIZE = 8192
-TOTAL_SIZE = 8*(1024)**2  # 8MB
+TOTAL_SIZE = 8388608  # 8MB
+PING_COUNT = 10  # Number of pings to average
 
 class SpeedTestServer:
     def __init__(self, host='0.0.0.0', port=5000):
@@ -22,7 +24,7 @@ class SpeedTestServer:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.host, self.port))
         self.running = False
-        self.clients = []  # Keep track of connected clients
+        self.clients = []
 
     def start(self):
         self.running = True
@@ -37,14 +39,22 @@ class SpeedTestServer:
                 client_thread = threading.Thread(target=self.handle_client, args=(client,))
                 client_thread.start()
             except socket.error:
-                break  # Break the loop if socket is closed
+                break
 
     def handle_client(self, client):
         try:
             while True:
                 test_type = client.recv(1024).decode()
                 
-                if test_type == 'download':
+                if test_type == 'ping':
+                    # Ping test - just echo back the timestamp
+                    while True:
+                        data = client.recv(1024)
+                        if data == b'ping_done':
+                            break
+                        client.send(data)
+                
+                elif test_type == 'download':
                     client.send(str(TOTAL_SIZE).encode())
                     client.recv(1024)  # Wait for ready
                     
@@ -59,14 +69,13 @@ class SpeedTestServer:
                 
                 elif test_type == 'upload':
                     bytes_received = 0
-                    client.send(b'ready')  # Signal ready to receive
+                    client.send(b'ready')
                     
                     while bytes_received < TOTAL_SIZE and self.running:
                         chunk = client.recv(min(CHUNK_SIZE, TOTAL_SIZE - bytes_received))
                         if not chunk:
                             break
                         bytes_received += len(chunk)
-                        # Send progress ack every MB
                         if bytes_received % 1048576 == 0:
                             client.send(b'ack')
                     
@@ -76,7 +85,7 @@ class SpeedTestServer:
                     break
                     
         except Exception as e:
-            if self.running:  # Only print error if server is still running
+            if self.running:
                 print(f"Error handling client: {e}")
         finally:
             if client in self.clients:
@@ -86,15 +95,13 @@ class SpeedTestServer:
     def stop(self):
         print("\nShutting down server...")
         self.running = False
-        # Close all client connections
-        for client in self.clients[:]:  # Make a copy of the list to avoid modification during iteration
+        for client in self.clients[:]:
             try:
                 client.shutdown(socket.SHUT_RDWR)
                 client.close()
                 self.clients.remove(client)
             except:
                 pass
-        # Close the server socket
         try:
             self.sock.shutdown(socket.SHUT_RDWR)
         except:
@@ -110,6 +117,28 @@ class SpeedTestClient:
 
     def connect(self):
         self.sock.connect((self.host, self.port))
+        
+    def test_latency(self):
+        self.sock.send(b'ping')
+        latencies = []
+        
+        # Perform multiple pings and measure round-trip time
+        for _ in range(PING_COUNT):
+            start_time = time.time()
+            self.sock.send(str(time.time()).encode())
+            self.sock.recv(1024)
+            latency = (time.time() - start_time) * 1000  # Convert to ms
+            latencies.append(latency)
+            time.sleep(0.1)  # Small delay between pings
+            
+        self.sock.send(b'ping_done')
+        
+        # Calculate statistics
+        avg_latency = statistics.mean(latencies)
+        min_latency = min(latencies)
+        max_latency = max(latencies)
+        
+        return min_latency, avg_latency, max_latency
 
     def test_download(self):
         self.sock.send(b'download')
@@ -135,7 +164,7 @@ class SpeedTestClient:
 
     def test_upload(self):
         self.sock.send(b'upload')
-        response = self.sock.recv(1024)  # Wait for ready
+        response = self.sock.recv(1024)
         if response != b'ready':
             raise Exception("Server not ready")
         
@@ -151,11 +180,9 @@ class SpeedTestClient:
                 bytes_sent += sent
                 pbar.update(sent)
                 
-                # Wait for progress ack every MB
                 if bytes_sent % 1048576 == 0:
                     self.sock.recv(1024)
         
-        # Wait for final ack
         response = self.sock.recv(1024)
         if response != b'done':
             raise Exception("Upload not acknowledged")
@@ -166,7 +193,7 @@ class SpeedTestClient:
     def close(self):
         try:
             self.sock.send(b'quit')
-            time.sleep(0.1)  # Give server time to process quit message
+            time.sleep(0.1)
             self.sock.shutdown(socket.SHUT_RDWR)
         except:
             pass
@@ -181,19 +208,27 @@ def run_speed_test(server_host='localhost'):
         client.connect()
         print(f"Connected to server at {server_host}")
         
+        print("\nMeasuring latency...")
+        min_latency, avg_latency, max_latency = client.test_latency()
+        print(f"Latency: min={min_latency:.1f}ms avg={avg_latency:.1f}ms max={max_latency:.1f}ms")
+        
         print("\nTesting download speed...")
+        print(f"Total data to download: {TOTAL_SIZE/1024/1024:.1f} MB")
         download_speed = client.test_download()
         print(f"Download speed: {download_speed:.2f} Mbps")
         
         print("\nTesting upload speed...")
+        print(f"Total data to upload: {TOTAL_SIZE/1024/1024:.1f} MB")
         upload_speed = client.test_upload()
         print(f"Upload speed: {upload_speed:.2f} Mbps")
         
         print("\nTest Summary:")
-        print(f"{'=' * 30}")
+        print(f"{'=' * 50}")
+        print(f"Total data transferred: {(TOTAL_SIZE*2)/1024/1024:.1f} MB")
+        print(f"Latency: {avg_latency:.1f}ms (min={min_latency:.1f}ms, max={max_latency:.1f}ms)")
         print(f"Download: {download_speed:.2f} Mbps")
         print(f"Upload:   {upload_speed:.2f} Mbps")
-        print(f"{'=' * 30}")
+        print(f"{'=' * 50}")
         
     except Exception as e:
         print(f"Error during speed test: {e}")
@@ -207,7 +242,6 @@ if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'server':
         server = SpeedTestServer()
         
-        # Handle Ctrl+C gracefully
         def signal_handler(signum, frame):
             server.stop()
             sys.exit(0)
