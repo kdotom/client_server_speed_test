@@ -2,3 +2,5 @@
 # Note: ssh should be enabled for the target machine.
 
 rsync --progress -h filename user@address:/path/for/file
+
+# scp -P 22 -r filename user@address:/path/for/file
